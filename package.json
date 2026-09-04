@@ -1,0 +1,22 @@
+{
+  "name": "merqora",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Merqora — The Intelligence Layer for Commerce. AI agents that discover revenue opportunities and safely execute commerce, built for Razorpay's AI Growth & Agentic Commerce track.",
+  "workspaces": [
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/api & npm run dev --workspace=apps/web",
+    "dev:api": "npm run dev --workspace=apps/api",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "build": "npm run build --workspace=apps/api && npm run build --workspace=apps/web",
+    "db:migrate": "npm run db:migrate --workspace=apps/api",
+    "db:seed": "npm run db:seed --workspace=apps/api",
+    "db:studio": "npm run db:studio --workspace=apps/api",
+    "test": "npm run test --workspace=apps/api",
+    "typecheck": "npm run typecheck --workspace=apps/api && npm run typecheck --workspace=apps/web"
+  },
+  "license": "MIT"
+}

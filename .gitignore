@@ -1,0 +1,18 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+*.log
+.DS_Store
+coverage/
+.vscode/
+.idea/
+
+# Prisma
+apps/api/prisma/dev.db
+apps/api/prisma/dev.db-journal
+
+# Vite
+apps/web/dist/
+apps/web/.vite/

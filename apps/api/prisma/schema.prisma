@@ -1,0 +1,371 @@
+// Merqora — Prisma schema
+// ARCHITECTURE NOTE (documented in docs/architecture.md):
+// All monetary values are stored as Int representing the smallest currency
+// unit (paise for INR) — the exact same convention Razorpay's own API uses.
+// This avoids floating point money bugs entirely without needing a Decimal
+// type, and means amounts sent to/received from Razorpay require no
+// conversion. Never use Float/Decimal for money in this codebase.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// AUTH / MERCHANT
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         String   @default("MERCHANT") // ADMIN | MERCHANT | MARKETING | SUPPORT
+  merchantId   String?
+  merchant     Merchant? @relation(fields: [merchantId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([merchantId])
+}
+
+model Merchant {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  currency  String   @default("INR")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users               User[]
+  products            Product[]
+  customers           Customer[]
+  carts               Cart[]
+  orders              Order[]
+  campaigns           Campaign[]
+  agentRuns           AgentRun[]
+  policy              MerchantPolicy?
+  auditLogs           AuditLog[]
+  knowledgeDocuments  KnowledgeDocument[]
+  recommendations     Recommendation[]
+  webhookEvents       WebhookEvent[]
+}
+
+// ---------------------------------------------------------------------------
+// CATALOG
+// ---------------------------------------------------------------------------
+
+model Product {
+  id            String   @id @default(uuid())
+  merchantId    String
+  merchant      Merchant @relation(fields: [merchantId], references: [id])
+  name          String
+  description   String
+  category      String
+  priceInPaise  Int
+  currency      String   @default("INR")
+  inventory     Int      @default(0)
+  attributes    Json     @default("{}")
+  useCases      String[] @default([])
+  imageUrl      String?
+  returnPolicy  String   @default("30-day returns accepted")
+  shippingInfo  String   @default("Ships in 2-4 business days")
+  discountEligible Boolean @default(true)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  cartItems     CartItem[]
+  orderItems    OrderItem[]
+  recommendationsFrom Recommendation[] @relation("SourceProduct")
+  recommendationsTo   Recommendation[] @relation("RecommendedProduct")
+
+  @@index([merchantId])
+  @@index([merchantId, category])
+  @@index([merchantId, isActive])
+}
+
+model Recommendation {
+  id                  String   @id @default(uuid())
+  merchantId          String
+  merchant            Merchant @relation(fields: [merchantId], references: [id])
+  sourceProductId     String
+  sourceProduct       Product  @relation("SourceProduct", fields: [sourceProductId], references: [id])
+  recommendedProductId String
+  recommendedProduct  Product  @relation("RecommendedProduct", fields: [recommendedProductId], references: [id])
+  affinityScore       Float    @default(0)
+  coPurchaseCount     Int      @default(0)
+  reason              String
+  createdAt           DateTime @default(now())
+
+  @@index([merchantId, sourceProductId])
+}
+
+// ---------------------------------------------------------------------------
+// CUSTOMERS / CART
+// ---------------------------------------------------------------------------
+
+model Customer {
+  id           String   @id @default(uuid())
+  merchantId   String
+  merchant     Merchant @relation(fields: [merchantId], references: [id])
+  name         String
+  email        String
+  phone        String?
+  segment      String   @default("general") // e.g. running_enthusiast, high_value, at_risk
+  totalSpentInPaise Int @default(0)
+  ordersCount  Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  carts        Cart[]
+  orders       Order[]
+
+  @@index([merchantId])
+  @@index([merchantId, segment])
+  @@unique([merchantId, email])
+}
+
+model Cart {
+  id           String   @id @default(uuid())
+  merchantId   String
+  merchant     Merchant @relation(fields: [merchantId], references: [id])
+  customerId   String?
+  customer     Customer? @relation(fields: [customerId], references: [id])
+  status       String   @default("ACTIVE") // ACTIVE | ABANDONED | CONVERTED
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  items        CartItem[]
+  orders       Order[]
+
+  @@index([merchantId, status])
+}
+
+model CartItem {
+  id         String  @id @default(uuid())
+  cartId     String
+  cart       Cart    @relation(fields: [cartId], references: [id])
+  productId  String
+  product    Product @relation(fields: [productId], references: [id])
+  quantity   Int     @default(1)
+  unitPriceInPaise Int
+
+  @@index([cartId])
+}
+
+// ---------------------------------------------------------------------------
+// ORDERS / PAYMENTS
+// ---------------------------------------------------------------------------
+
+model Order {
+  id                  String   @id @default(uuid())
+  merchantId          String
+  merchant            Merchant @relation(fields: [merchantId], references: [id])
+  customerId          String?
+  customer            Customer? @relation(fields: [customerId], references: [id])
+  cartId              String?
+  cart                Cart?    @relation(fields: [cartId], references: [id])
+  status              String   @default("PENDING") // PENDING | PAID | FAILED | CANCELLED
+  subtotalInPaise     Int
+  discountInPaise     Int      @default(0)
+  shippingInPaise     Int      @default(0)
+  totalInPaise        Int
+  currency            String   @default("INR")
+  idempotencyKey      String?  @unique
+  createdByAgentRunId String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  items        OrderItem[]
+  payments     Payment[]
+
+  @@index([merchantId, status])
+  @@index([merchantId, createdAt])
+}
+
+model OrderItem {
+  id         String  @id @default(uuid())
+  orderId    String
+  order      Order   @relation(fields: [orderId], references: [id])
+  productId  String
+  product    Product @relation(fields: [productId], references: [id])
+  quantity   Int
+  unitPriceInPaise Int
+
+  @@index([orderId])
+}
+
+model Payment {
+  id                    String   @id @default(uuid())
+  orderId               String
+  order                 Order    @relation(fields: [orderId], references: [id])
+  provider              String   @default("razorpay")
+  razorpayOrderId       String?  @unique
+  razorpayPaymentId     String?  @unique
+  razorpaySignature     String?
+  amountInPaise         Int
+  currency              String   @default("INR")
+  status                String   @default("CREATED") // CREATED | AUTHORIZED | CAPTURED | FAILED | REFUNDED
+  idempotencyKey        String   @unique
+  failureReason         String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([status])
+}
+
+model WebhookEvent {
+  id            String   @id @default(uuid())
+  merchantId    String?
+  merchant      Merchant? @relation(fields: [merchantId], references: [id])
+  provider      String   @default("razorpay")
+  eventType     String
+  payload       Json
+  signatureValid Boolean
+  processed     Boolean  @default(false)
+  processingError String?
+  receivedAt    DateTime @default(now())
+
+  @@index([eventType])
+}
+
+// ---------------------------------------------------------------------------
+// CAMPAIGNS
+// ---------------------------------------------------------------------------
+
+model Campaign {
+  id                    String   @id @default(uuid())
+  merchantId            String
+  merchant              Merchant @relation(fields: [merchantId], references: [id])
+  title                 String
+  goal                  String
+  offerDescription      String
+  discountInPaise       Int
+  status                String   @default("PROPOSED") // PROPOSED | APPROVED | REJECTED | EXECUTING | COMPLETED
+  estimatedRecoverableInPaise Int @default(0)
+  riskLevel             String   @default("MEDIUM") // LOW | MEDIUM | HIGH
+  createdByAgentRunId   String?
+  approvedByUserId      String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  audience     CampaignAudience[]
+
+  @@index([merchantId, status])
+}
+
+model CampaignAudience {
+  id         String   @id @default(uuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+  customerId String
+  cartValueInPaise Int @default(0)
+
+  @@index([campaignId])
+}
+
+// ---------------------------------------------------------------------------
+// AI AGENT / GOVERNANCE
+// ---------------------------------------------------------------------------
+
+model AgentRun {
+  id           String   @id @default(uuid())
+  merchantId   String
+  merchant     Merchant @relation(fields: [merchantId], references: [id])
+  agentType    String   // revenue_agent | ai_buyer | upsell_agent | campaign_orchestrator
+  userMessage  String
+  status       String   @default("RUNNING") // RUNNING | COMPLETED | FAILED
+  finalResponse String?
+  modelUsed    String?
+  startedAt    DateTime @default(now())
+  completedAt  DateTime?
+
+  actions      AgentAction[]
+
+  @@index([merchantId, agentType])
+}
+
+model AgentAction {
+  id              String   @id @default(uuid())
+  agentRunId      String
+  agentRun        AgentRun @relation(fields: [agentRunId], references: [id])
+  actionType      String   // TOOL_CALL | ACTION_PROPOSAL | DISCOUNT_PROPOSAL | ORDER_CREATE_ATTEMPT | CAMPAIGN_PROPOSAL
+  toolName        String?
+  input           Json     @default("{}")
+  output          Json?
+  amountInPaise   Int?
+  currency        String   @default("INR")
+  reason          String?
+  policyEvaluated String?
+  policyResult    String?  // ALLOWED | BLOCKED | REQUIRES_APPROVAL
+  approvalStatus  String   @default("NOT_REQUIRED") // NOT_REQUIRED | PENDING | APPROVED | REJECTED
+  finalStatus     String   @default("PENDING") // PENDING | SUCCESS | FAILED | BLOCKED
+  idempotencyKey  String?
+  createdAt       DateTime @default(now())
+
+  approvals       AgentApproval[]
+
+  @@index([agentRunId])
+  @@index([finalStatus])
+}
+
+model AgentApproval {
+  id             String   @id @default(uuid())
+  agentActionId  String
+  agentAction    AgentAction @relation(fields: [agentActionId], references: [id])
+  requestedAt    DateTime @default(now())
+  decidedAt      DateTime?
+  decidedByUserId String?
+  decision       String   @default("PENDING") // PENDING | APPROVED | REJECTED
+
+  @@index([agentActionId])
+}
+
+model MerchantPolicy {
+  id                      String   @id @default(uuid())
+  merchantId              String   @unique
+  merchant                Merchant @relation(fields: [merchantId], references: [id])
+  maximumDiscountInPaise  Int      @default(50000)   // ₹500
+  maximumTransactionInPaise Int    @default(1000000) // ₹10,000
+  automaticPayment        Boolean  @default(false)
+  automaticRefund         Boolean  @default(false)
+  campaignRequiresApproval Boolean @default(true)
+  upsellAllowed           Boolean  @default(true)
+  agentCanCreateOrder     Boolean  @default(true)
+  updatedAt               DateTime @updatedAt
+}
+
+model AuditLog {
+  id              String   @id @default(uuid())
+  merchantId      String
+  merchant        Merchant @relation(fields: [merchantId], references: [id])
+  category        String   // AGENT | PAYMENT | CAMPAIGN | POLICY | APPROVAL | FAILURE | AUTH
+  actor           String   // e.g. "agent:revenue_agent", "user:<id>", "system"
+  action          String
+  summary         String
+  metadata        Json     @default("{}")
+  status          String   @default("SUCCESS") // SUCCESS | BLOCKED | FAILED
+  agentRunId      String?
+  createdAt       DateTime @default(now())
+
+  @@index([merchantId, category])
+  @@index([merchantId, createdAt])
+}
+
+model KnowledgeDocument {
+  id          String   @id @default(uuid())
+  merchantId  String
+  merchant    Merchant @relation(fields: [merchantId], references: [id])
+  title       String
+  category    String   // return_policy | shipping_policy | discount_policy | faq | product_info
+  content     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([merchantId, category])
+}
